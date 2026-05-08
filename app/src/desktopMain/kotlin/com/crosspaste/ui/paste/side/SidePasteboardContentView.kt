@@ -71,7 +71,6 @@ import com.crosspaste.ui.theme.AppUISize.tiny3XRoundedCornerShape
 import com.crosspaste.ui.theme.AppUISize.xxLarge
 import com.crosspaste.utils.GlobalCoroutineScope.mainCoroutineDispatcher
 import kotlinx.coroutines.CoroutineName
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.take
@@ -102,7 +101,6 @@ fun SidePasteboardContentView() {
     pasteSelectionViewModel.searchListState = searchListState
     val adapter = rememberScrollbarAdapter(scrollState = searchListState)
     var showScrollbar by remember { mutableStateOf(false) }
-    var scrollJob: Job? by remember { mutableStateOf(null) }
     val coroutineScope = rememberCoroutineScope()
     val latestSearchResult = rememberUpdatedState(searchResult)
     val pasteListFocusRequester = remember { FocusRequester() }
@@ -188,10 +186,12 @@ fun SidePasteboardContentView() {
         }
     }
 
+    // Decoupled "load more": only fires when visible item indices change (not on every pixel offset shift)
     LaunchedEffect(searchListState) {
         snapshotFlow {
-            searchListState.layoutInfo.visibleItemsInfo
-        }.distinctUntilChanged().collect { visibleItems ->
+            searchListState.layoutInfo.visibleItemsInfo.map { it.index }
+        }.distinctUntilChanged().collect {
+            val visibleItems = searchListState.layoutInfo.visibleItemsInfo
             if (visibleItems.isNotEmpty()) {
                 // Only consider data items, exclude the loading indicator item
                 val lastDataItem = visibleItems.lastOrNull { it.index < latestSearchResult.value.size }
@@ -202,16 +202,21 @@ fun SidePasteboardContentView() {
                     }
                 }
             }
+        }
+    }
 
+    // Decoupled scrollbar visibility: driven by isScrollInProgress instead of pixel-level snapshotFlow
+    LaunchedEffect(searchListState.isScrollInProgress) {
+        if (searchListState.isScrollInProgress) {
+            val visibleItems = searchListState.layoutInfo.visibleItemsInfo
             val dataItemCount = visibleItems.count { it.index < latestSearchResult.value.size }
-            showScrollbar = latestSearchResult.value.size > dataItemCount
+            if (latestSearchResult.value.size > dataItemCount) {
+                showScrollbar = true
+            }
+        } else {
             if (showScrollbar) {
-                scrollJob?.cancel()
-                scrollJob =
-                    coroutineScope.launch {
-                        delay(1000)
-                        showScrollbar = false
-                    }
+                delay(1000)
+                showScrollbar = false
             }
         }
     }
@@ -301,6 +306,7 @@ fun SidePasteboardContentView() {
                 itemsIndexed(
                     searchResult,
                     key = { _, item -> item.id },
+                    contentType = { _, _ -> "pasteItem" },
                 ) { index, pasteData ->
 
                     val currentIndex by rememberUpdatedState(index)
