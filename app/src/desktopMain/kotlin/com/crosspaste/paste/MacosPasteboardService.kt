@@ -6,6 +6,7 @@ import com.crosspaste.config.CommonConfigManager
 import com.crosspaste.notification.NotificationManager
 import com.crosspaste.platform.macos.api.MacosApi
 import com.crosspaste.sound.SoundService
+import com.crosspaste.sync.SyncManager
 import com.crosspaste.utils.getControlUtils
 import com.sun.jna.ptr.IntByReference
 import io.github.oshai.kotlinlogging.KLogger
@@ -18,6 +19,7 @@ import kotlinx.coroutines.launch
 import java.awt.Toolkit
 import java.awt.datatransfer.Clipboard
 import java.awt.datatransfer.Transferable
+import kotlin.time.Duration.Companion.milliseconds
 
 class MacosPasteboardService(
     override val appWindowManager: DesktopAppWindowManager,
@@ -29,6 +31,7 @@ class MacosPasteboardService(
     override val pasteReleaseService: PasteReleaseService,
     override val soundService: SoundService,
     override val sourceExclusionService: DesktopSourceExclusionService,
+    private val syncManager: SyncManager,
 ) : AbstractPasteboardService() {
     override val logger: KLogger = KotlinLogging.logger {}
 
@@ -112,9 +115,28 @@ class MacosPasteboardService(
                                     if (contents != ownerTransferable) {
                                         contents?.let {
                                             ownerTransferable = it
+                                            val isAppleRemoteClipboard = remote.value != 0
+                                            val targetAppInstanceIds =
+                                                if (isAppleRemoteClipboard) {
+                                                    syncManager
+                                                        .getSyncHandlers()
+                                                        .filterValues { handler ->
+                                                            !handler.currentSyncRuntimeInfo.platform.isMacos()
+                                                        }.keys
+                                                } else {
+                                                    null
+                                                }
                                             launch(CoroutineName("MacPasteboardServiceConsumer")) {
                                                 val pasteTransferable = DesktopReadTransferable(it)
-                                                pasteConsumer.consume(pasteTransferable, source, remote.value != 0)
+                                                pasteConsumer.consume(
+                                                    pasteTransferable,
+                                                    PasteSourceContext(
+                                                        source = source,
+                                                        remote = false,
+                                                        appleRemoteClipboard = isAppleRemoteClipboard,
+                                                        targetAppInstanceIds = targetAppInstanceIds,
+                                                    ),
+                                                )
                                             }
                                         }
                                     }
@@ -125,7 +147,7 @@ class MacosPasteboardService(
                 }.onFailure { e ->
                     logger.error(e) { "Failed to consume transferable" }
                 }
-                delay(280L)
+                delay(280L.milliseconds)
             }
         }
     }
